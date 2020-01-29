@@ -45,14 +45,17 @@ struct SshfsMount : public mp::test::SftpServerTest
         return {std::move(session), default_source, default_target, default_map, default_map};
     }
 
-    auto make_exec_that_fails_for(const std::string& expected_cmd, bool& invoked)
+    auto make_exec_that_fails_for(const std::vector<std::string>& expected_cmds, bool& invoked)
     {
-        auto request_exec = [this, expected_cmd, &invoked](ssh_channel, const char* raw_cmd) {
+        auto request_exec = [this, expected_cmds, &invoked](ssh_channel, const char* raw_cmd) {
             std::string cmd{raw_cmd};
-            if (cmd.find(expected_cmd) != std::string::npos)
+            for (const auto expected_cmd : expected_cmds)
             {
-                invoked = true;
-                exit_status_mock.return_exit_code(SSH_ERROR);
+                if (cmd.find(expected_cmd) != std::string::npos)
+                {
+                    invoked = true;
+                    exit_status_mock.return_exit_code(SSH_ERROR);
+                }
             }
             return SSH_OK;
         };
@@ -88,7 +91,7 @@ struct SshfsMount : public mp::test::SftpServerTest
 TEST_F(SshfsMount, throws_when_sshfs_does_not_exist)
 {
     bool invoked{false};
-    auto request_exec = make_exec_that_fails_for("which sshfs", invoked);
+    auto request_exec = make_exec_that_fails_for({"snap list multipass-sshfs", "which sshfs"}, invoked);
     REPLACE(ssh_channel_request_exec, request_exec);
 
     EXPECT_THROW(make_sshfsmount(), mp::SSHFSMissingError);
@@ -98,7 +101,7 @@ TEST_F(SshfsMount, throws_when_sshfs_does_not_exist)
 TEST_F(SshfsMount, throws_when_unable_to_make_target_dir)
 {
     bool invoked{false};
-    auto request_exec = make_exec_that_fails_for("mkdir", invoked);
+    auto request_exec = make_exec_that_fails_for({"mkdir"}, invoked);
     REPLACE(ssh_channel_request_exec, request_exec);
 
     EXPECT_THROW(make_sshfsmount(), std::runtime_error);
@@ -108,7 +111,7 @@ TEST_F(SshfsMount, throws_when_unable_to_make_target_dir)
 TEST_F(SshfsMount, throws_when_unable_to_obtain_user_id_name)
 {
     bool invoked{false};
-    auto request_exec = make_exec_that_fails_for("id -nu", invoked);
+    auto request_exec = make_exec_that_fails_for({"id -nu"}, invoked);
 
     REPLACE(ssh_channel_request_exec, request_exec);
 
@@ -119,7 +122,7 @@ TEST_F(SshfsMount, throws_when_unable_to_obtain_user_id_name)
 TEST_F(SshfsMount, throws_when_unable_to_obtain_group_id_name)
 {
     bool invoked{false};
-    auto request_exec = make_exec_that_fails_for("id -ng", invoked);
+    auto request_exec = make_exec_that_fails_for({"id -ng"}, invoked);
 
     REPLACE(ssh_channel_request_exec, request_exec);
 
@@ -130,7 +133,7 @@ TEST_F(SshfsMount, throws_when_unable_to_obtain_group_id_name)
 TEST_F(SshfsMount, throws_when_unable_to_chown)
 {
     bool invoked{false};
-    auto request_exec = make_exec_that_fails_for("chown", invoked);
+    auto request_exec = make_exec_that_fails_for({"chown"}, invoked);
 
     REPLACE(ssh_channel_request_exec, request_exec);
 
@@ -141,7 +144,7 @@ TEST_F(SshfsMount, throws_when_unable_to_chown)
 TEST_F(SshfsMount, throws_when_unable_to_obtain_uid)
 {
     bool invoked{false};
-    auto request_exec = make_exec_that_fails_for("id -u", invoked);
+    auto request_exec = make_exec_that_fails_for({"id -u"}, invoked);
 
     REPLACE(ssh_channel_request_exec, request_exec);
 
