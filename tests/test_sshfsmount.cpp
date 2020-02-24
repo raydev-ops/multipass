@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Canonical, Ltd.
+ * Copyright (C) 2018-2020 Canonical, Ltd.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -64,8 +64,8 @@ struct SshfsMount : public mp::test::SftpServerTest
 
     auto make_channel_read_return(const std::string& output, std::string::size_type& remaining, bool& prereq_invoked)
     {
-        auto channel_read = [output, &remaining, &prereq_invoked](ssh_channel, void* dest, uint32_t count,
-                                                                  int is_stderr, int) {
+        auto channel_read = [&output, &remaining, &prereq_invoked](ssh_channel, void* dest, uint32_t count,
+                                                                   int is_stderr, int) {
             if (!prereq_invoked)
                 return 0u;
             const auto num_to_copy = std::min(count, static_cast<uint32_t>(remaining));
@@ -243,4 +243,33 @@ TEST_F(SshfsMount, unblocks_when_sftpserver_exits)
 
     mount.join();
     EXPECT_TRUE(stopped_ok);
+}
+
+TEST_F(SshfsMount, invalid_fuse_version_throws)
+{
+    bool invoked{false};
+    std::string output;
+    auto remaining = output.size();
+    auto channel_read = make_channel_read_return(output, remaining, invoked);
+    REPLACE(ssh_channel_read_timeout, channel_read);
+
+    auto request_exec = [&invoked, &remaining, &output](ssh_channel, const char* raw_cmd) {
+        std::string cmd{raw_cmd};
+        if (cmd.find("sudo multipass-sshfs.env") != std::string::npos)
+        {
+            output = "LD_LIBRARY_PATH=/foo/bar\nSNAP=/baz\n";
+            remaining = output.size();
+            invoked = true;
+        }
+        else if (cmd.find("sshfs -V") != std::string::npos)
+        {
+            output = "FUSE library version: fu.man.chu";
+            remaining = output.size();
+        }
+        return SSH_OK;
+    };
+    REPLACE(ssh_channel_request_exec, request_exec);
+
+    EXPECT_THROW(make_sshfsmount(), std::runtime_error);
+    EXPECT_TRUE(invoked);
 }
