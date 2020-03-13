@@ -21,6 +21,7 @@
 #include <multipass/exceptions/sshfs_missing_error.h>
 #include <multipass/ssh/ssh_session.h>
 #include <multipass/sshfs_mount/sshfs_mount.h>
+#include <multipass/utils.h>
 
 #include <gmock/gmock.h>
 
@@ -272,4 +273,47 @@ TEST_F(SshfsMount, invalid_fuse_version_throws)
 
     EXPECT_THROW(make_sshfsmount(), std::runtime_error);
     EXPECT_TRUE(invoked);
+}
+
+TEST_F(SshfsMount, throws_install_sshfs_which_snap_fails)
+{
+    bool invoked{false};
+    auto request_exec = make_exec_that_fails_for({"which snap"}, invoked);
+    REPLACE(ssh_channel_request_exec, request_exec);
+
+    mp::SSHSession session{"a", 42};
+
+    EXPECT_THROW(mp::utils::install_sshfs_for("foo", session), std::runtime_error);
+    EXPECT_TRUE(invoked);
+}
+
+TEST_F(SshfsMount, throws_install_sshfs_no_snap_dir_fails)
+{
+    bool invoked{false};
+    auto request_exec = make_exec_that_fails_for({"[ -e /snap ]"}, invoked);
+    REPLACE(ssh_channel_request_exec, request_exec);
+
+    mp::SSHSession session{"a", 42};
+
+    EXPECT_THROW(mp::utils::install_sshfs_for("foo", session), std::runtime_error);
+    EXPECT_TRUE(invoked);
+}
+
+TEST_F(SshfsMount, throws_install_sshfs_snap_install_fails)
+{
+    bool invoked{false};
+    auto request_exec = make_exec_that_fails_for({"sudo snap install multipass-sshfs"}, invoked);
+    REPLACE(ssh_channel_request_exec, request_exec);
+
+    mp::SSHSession session{"a", 42};
+
+    EXPECT_THROW(mp::utils::install_sshfs_for("foo", session), mp::SSHFSMissingError);
+    EXPECT_TRUE(invoked);
+}
+
+TEST_F(SshfsMount, install_sshfs_no_failures_does_not_throw)
+{
+    mp::SSHSession session{"a", 42};
+
+    EXPECT_NO_THROW(mp::utils::install_sshfs_for("foo", session));
 }
