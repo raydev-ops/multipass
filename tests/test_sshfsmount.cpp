@@ -80,9 +80,11 @@ struct SshfsMount : public mp::test::SftpServerTest
             if (next_expected_cmd != commands.end())
             {
                 // Check if the first of the remaining commands is being executed.
-                if (cmd == next_expected_cmd->first)
+                if (cmd.find(next_expected_cmd->first) != std::string::npos)
                 {
-                    output = next_expected_cmd->second;
+                    // We add a character to the output because the function gathering the output of the executed
+                    // commands uses it to mark the end of the output.
+                    output = std::string{next_expected_cmd->second + '-'};
                     remaining = output.size();
                     ++next_expected_cmd;
                     invoked = true;
@@ -95,9 +97,9 @@ struct SshfsMount : public mp::test::SftpServerTest
                     // command vector.
                     for (auto it = std::next(next_expected_cmd); it != commands.end(); ++it)
                     {
-                        if (cmd == it->first)
+                        if (cmd.find(it->first) != std::string::npos)
                         {
-                            output = it->second;
+                            output = std::string{it->second + '-'}; // Same as above...
                             remaining = output.size();
                             ADD_FAILURE() << "\"" << (it->first) << "\" executed out of order; expected \""
                                           << next_expected_cmd->first << "\"";
@@ -361,4 +363,47 @@ TEST_F(SshfsMount, works_with_absolute_paths)
         {"id -g", "1000"}};
 
     test_command_execution(commands, std::string("/home/ubuntu/target"));
+}
+
+TEST_F(SshfsMount, works_with_tilde)
+{
+    CommandVector commands = {
+        {"pwd", "/home/ubuntu"},
+        {"sudo /bin/bash -c 'P=\"/home/ubuntu/target\"; while [ ! -d \"$P/\" ]; do P=${P%/*}; done; echo $P/'",
+         "/home/ubuntu/"},
+        {"id -u", "1000"},
+        {"id -g", "1000"}};
+
+    test_command_execution(commands, std::string("~/target"));
+}
+
+TEST_F(SshfsMount, works_with_tilde_for_another_user)
+{
+    // Assume a user johndoe exists in the system and his home path is /home/johndoe.
+    CommandVector commands = {
+        {"getent passwd johndoe | cut -d : -f 6", "/home/johndoe"},
+        {"sudo /bin/bash -c 'P=\"/home/johndoe/target\"; while [ ! -d \"$P/\" ]; do P=${P%/*}; done; echo $P/'",
+         "/home/johndoe/"},
+        {"id -u", "1000"},
+        {"id -g", "1000"}};
+
+    test_command_execution(commands, std::string("~johndoe/target"));
+}
+
+TEST_F(SshfsMount, works_with_tilde_and_space)
+{
+    // Assume a user johndoe exists in the system, and his home path ends in space.
+    CommandVector commands = {
+        {"getent passwd johndoe | cut -d : -f 6", "/home/pathendinginspace "},
+        {"sudo /bin/bash -c 'P=\"/home/pathendinginspace /target\"; while [ ! -d \"$P/\" ]; do P=${P%/*}; done; echo "
+         "$P/'",
+         "/home/pathendinginspace /"},
+        {"sudo /bin/bash -c 'cd \"/home/pathendinginspace /\" && mkdir -p \"target\"'", ""},
+        {"id -nu", "ubuntu"},
+        {"id -ng", "ubuntu"},
+        {"sudo /bin/bash -c 'cd \"/home/pathendinginspace /\" && chown -R ubuntu:ubuntu target'", ""},
+        {"id -u", "1000"},
+        {"id -g", "1000"}};
+
+    test_command_execution(commands, std::string("~johndoe/target"));
 }

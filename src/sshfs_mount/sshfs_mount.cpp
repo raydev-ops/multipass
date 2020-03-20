@@ -50,6 +50,25 @@ auto run_cmd(mp::SSHSession& session, std::string&& cmd)
     return run_cmd(session, std::forward<std::string>(cmd), error_handler);
 }
 
+// Run a command returning a string which can end in space on a given session and reads the result. It adds a
+// non-space character (actually, a '-') to signal the end of the resulting string, and later removes the trailing
+// spaces and the special character to gather the contents of the return string including trailing spaces of the
+// command output.
+std::string run_string_cmd(mp::SSHSession& session, std::string&& cmd)
+{
+    std::string ret;
+    ret = run_cmd(session, "echo `" + cmd + "`-");
+    mp::utils::trim_end(ret); // Remove the trailing spaces, if any.
+
+    // If the output was indeed correct and it has a '-' at the end, we have to remove it.
+    if (ret.size())
+    {
+        ret.pop_back();
+    }
+
+    return ret;
+}
+
 // Check if sshfs exists on a given SSH session.
 void check_sshfs_exists(mp::SSHSession& session)
 {
@@ -62,6 +81,43 @@ void check_sshfs_exists(mp::SSHSession& session)
     run_cmd(session, "which sshfs", error_handler);
 }
 
+// If the target name starts with ~, this function returns the full directory name. If not, it returns the same
+// target name.
+std::string expand_home_directory(mp::SSHSession& session, const std::string& target)
+{
+    std::string expanded_target;
+
+    if ('~' == target[0])
+    {
+        std::string home;
+
+        // Get the user name, which can be empty.
+        auto pos = (1 == target.size()) ? 1 : target.find('/', 1);
+        if (1 == pos)
+        {
+            home = run_string_cmd(session, "pwd");
+        }
+        else
+        {
+            std::string username = target.substr(1, pos - 1);
+            home = run_string_cmd(session, "getent passwd " + username + " | cut -d : -f 6");
+            if (0 == home.size())
+            {
+                throw std::runtime_error("user " + username + " does not exist or does not have a home defined");
+            }
+        }
+
+        // Note that target.substr(...) has the directory slash.
+        expanded_target = home + target.substr(pos, target.size() - 1);
+    }
+    else
+    {
+        expanded_target = target;
+    }
+
+    return expanded_target;
+}
+
 // Split a path into existing and to-be-created parts.
 std::pair<std::string, std::string> get_path_split(mp::SSHSession& session, const std::string& target)
 {
@@ -70,20 +126,17 @@ std::pair<std::string, std::string> get_path_split(mp::SSHSession& session, cons
 
     if (complete_path.isRelative())
     {
-        QString home = QString::fromStdString(run_cmd(session, "pwd")).trimmed();
-        absolute = home + '/' + complete_path.path();
+        std::string home = run_string_cmd(session, "pwd");
+        absolute = QString::fromStdString(home) + '/' + complete_path.path();
     }
     else
     {
         absolute = complete_path.path();
     }
 
-    QString existing =
-        QString::fromStdString(
-            run_cmd(session,
-                    fmt::format("sudo /bin/bash -c 'P=\"{}\"; while [ ! -d \"$P/\" ]; do P=${{P%/*}}; done; echo $P/'",
-                                absolute)))
-            .trimmed();
+    QString existing = QString::fromStdString(run_string_cmd(
+        session,
+        fmt::format("sudo /bin/bash -c 'P=\"{}\"; while [ ! -d \"$P/\" ]; do P=${{P%/*}}; done; echo $P/'", absolute)));
 
     return {existing.toStdString(), QDir(existing).relativeFilePath(absolute).toStdString()};
 }
@@ -99,13 +152,16 @@ void make_target_dir(mp::SSHSession& session, const std::string& root, const std
 // Assume it is already created.
 void set_owner_for(mp::SSHSession& session, const std::string& root, const std::string& relative_target)
 {
-    auto vm_user = run_cmd(session, "id -nu");
-    auto vm_group = run_cmd(session, "id -ng");
-    mp::utils::trim_end(vm_user);
-    mp::utils::trim_end(vm_group);
+    auto vm_user = run_string_cmd(session, "id -nu");
+    auto vm_group = run_string_cmd(session, "id -ng");
 
-    run_cmd(session, fmt::format("sudo /bin/bash -c 'cd \"{}\" && chown -R {}:{} {}'", root, vm_user, vm_group,
-                                 relative_target.substr(0, relative_target.find_first_of('/'))));
+    // Get the first directory of the relative path.
+    std::string::size_type first_slash = relative_target.find_first_of('/');
+    std::string first_dir =
+        (std::string::npos == first_slash) ? relative_target : relative_target.substr(0, first_slash);
+
+    run_cmd(session,
+            fmt::format("sudo /bin/bash -c 'cd \"{}\" && chown -R {}:{} {}'", root, vm_user, vm_group, first_dir));
 }
 
 auto make_sftp_server(mp::SSHSession&& session, const std::string& source, const std::string& target,
@@ -116,8 +172,11 @@ auto make_sftp_server(mp::SSHSession&& session, const std::string& source, const
 
     check_sshfs_exists(session);
 
+    // Expand the ~ if the target contains it.
+    std::string expanded_target = expand_home_directory(session, target);
+
     // Split the path in existing and missing parts.
-    const auto& [leading, missing] = get_path_split(session, target);
+    const auto& [leading, missing] = get_path_split(session, expanded_target);
 
     // We need to create the part of the path which does not still exist,
     // and set then the correct ownership.
@@ -133,7 +192,7 @@ auto make_sftp_server(mp::SSHSession&& session, const std::string& source, const
              fmt::format("{}:{} {}(): `id -g` = {}", __FILE__, __LINE__, __FUNCTION__, output));
     auto default_gid = std::stoi(output);
 
-    return std::make_unique<mp::SftpServer>(std::move(session), source, target, gid_map, uid_map, default_uid,
+    return std::make_unique<mp::SftpServer>(std::move(session), source, expanded_target, gid_map, uid_map, default_uid,
                                             default_gid);
 }
 
